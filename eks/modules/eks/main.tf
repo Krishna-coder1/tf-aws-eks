@@ -1,0 +1,93 @@
+//Create an eks role so that cluster that created can use this role to manage or create ec2 instances,
+// and the networking stuff  
+resource "aws_iam_role" "cluster" {
+  name = "${var.cluster_name}-cluster-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action = "sts:AssumeRole"
+      Effect = "Allow"
+      Principal = {
+        Service = "eks.amazonaws.com"
+      }
+    }]
+  })
+}
+
+//We are attaching the policy of EKS cluster so that this role got the permission it needs to manage
+// the cluster
+resource "aws_iam_role_policy_attachment" "cluster_policy" {
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"
+  role       = aws_iam_role.cluster.name
+}
+
+// Now we are creating the cluster with the role we created and also injecting subnet
+resource "aws_eks_cluster" "main" {
+  name     = var.cluster_name
+  version  = var.cluster_version
+  role_arn = aws_iam_role.cluster.arn
+
+  vpc_config {
+    subnet_ids = var.subnet_ids
+  }
+
+  depends_on = [
+    aws_iam_role_policy_attachment.cluster_policy
+  ]
+}
+
+//Creating a role for the node so that it can access services required by a node 
+resource "aws_iam_role" "node" {
+  name = "${var.cluster_name}-node-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action = "sts:AssumeRole"
+      Effect = "Allow"
+      Principal = {
+        Service = "ec2.amazonaws.com"
+      }
+    }]
+  })
+}
+
+// Attaching required permissions for the node role we created
+resource "aws_iam_role_policy_attachment" "node_policy" {
+  for_each = toset([
+    "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy",
+    "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy",
+    "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly",
+  ])
+
+  policy_arn = each.value
+  role       = aws_iam_role.node.name
+
+
+}
+
+
+
+// Creating the nodegroup
+resource "aws_eks_node_group" "main" {
+  for_each = var.node_groups
+
+  cluster_name    = aws_eks_cluster.main.name
+  node_group_name = each.key
+  node_role_arn   = aws_iam_role.node.arn
+  subnet_ids      = var.subnet_ids
+
+  instance_types = each.value.instance_types
+  capacity_type  = each.value.capacity_type
+
+  scaling_config {
+    desired_size = each.value.scaling_config.desired_size
+    max_size     = each.value.scaling_config.max_size
+    min_size     = each.value.scaling_config.min_size
+  }
+
+  depends_on = [
+    aws_iam_role_policy_attachment.node_policy
+  ]
+}
